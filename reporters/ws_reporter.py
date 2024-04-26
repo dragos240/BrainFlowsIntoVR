@@ -1,5 +1,7 @@
 import asyncio
-from typing import Dict, List, Tuple
+from threading import Thread
+from time import sleep
+from typing import Dict, List, Optional, Tuple
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 from websockets.server import WebSocketServerProtocol, serve
 
@@ -11,15 +13,34 @@ DEFAULT_PORT = 12345
 PairType = Tuple[str, float]
 
 
+class WS_Reporter_Worker(Thread):
+    def __init__(self, *args, **kwargs):
+        for arg in kwargs["args"]:
+            if isinstance(arg, WS_Reporter):
+                self.reporter = arg
+        super().__init__(*args,
+                         **kwargs,
+                         name="WS_Reporter")
+
+    def start(self):
+        while True:
+            if self.reporter.started:
+                break
+            sleep(0.1)
+        return super().start()
+
+
 class WS_Reporter(Base_Reporter):
     """Websocket Reporter for Resonite"""
 
-    messages_to_be_sent: asyncio.Queue[PairType]
+    thread = Optional[WS_Reporter_Worker]
 
     def __init__(self, host: str, port: int):
         self.host = host
         self.port = port
-        self.messages_to_be_sent = asyncio.Queue()
+        self.messages_to_be_sent: asyncio.Queue[PairType] = asyncio.Queue()
+        self.thread = None
+        self.started = False
 
     def flatten(self, data_dict: Dict) -> List[PairType]:
         """Flatten k:v pairs into a List of Tuples with format (name, value)
@@ -68,6 +89,11 @@ class WS_Reporter(Base_Reporter):
         asyncio.run(self.start())
 
     def send(self, data_dict: Dict):
+        # We have to start a new thread to run asyncio.run so it doesn't
+        # block the main program
+        if self.thread is None:
+            self.thread = WS_Reporter_Worker(target=self.run, args=[self])
+            self.thread.start()
         send_pairs = self.flatten(data_dict)
 
         for pair in send_pairs:
